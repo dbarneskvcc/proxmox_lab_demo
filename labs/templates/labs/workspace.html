@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VM Lab Workspace</title>
+  <link rel="icon" href="data:,">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; overflow: hidden; }
+    .workspace { flex: 1; display: flex; min-height: 0; }
+
+    /* Column 1: labs */
+    .labs-sidebar { width: 240px; flex-shrink: 0; overflow-x: hidden; overflow-y: auto; transition: width .2s ease; }
+    .labs-sidebar .nav-link { color: var(--bs-light); border-radius: .375rem; white-space: nowrap; }
+    .labs-sidebar .nav-link:hover { background: rgba(255, 255, 255, .08); }
+    .labs-sidebar .nav-link.active { background: var(--bs-primary); color: #fff; }
+    .labs-sidebar .lab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    #toggleLabs i { display: inline-block; transition: transform .2s ease; }
+
+    /* Labs collapsed to an icon rail; tasks column takes the freed width */
+    body.labs-collapsed .labs-sidebar { width: 56px; padding-left: .5rem !important; padding-right: .5rem !important; }
+    body.labs-collapsed .labs-sidebar .labs-heading,
+    body.labs-collapsed .labs-sidebar .lab-label,
+    body.labs-collapsed .labs-sidebar .badge { display: none; }
+    body.labs-collapsed .labs-sidebar .labs-header,
+    body.labs-collapsed .labs-sidebar .nav-link { justify-content: center !important; }
+    body.labs-collapsed #toggleLabs i { transform: rotate(180deg); }
+    body.labs-collapsed .tasks-sidebar { width: 564px; }
+
+    /* Column 2: tasks */
+    .tasks-sidebar { width: 380px; flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; transition: width .2s ease; }
+    .tasks-sidebar .tasks-body { flex: 1; overflow-y: auto; }
+
+    /* Both sidebars hidden, toggled from the navbar */
+    body.panels-hidden .labs-sidebar,
+    body.panels-hidden .tasks-sidebar { display: none !important; }
+
+    /* Column 3: VM */
+    .vm-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .vm-frame-wrap { flex: 1; position: relative; background: #1e1e1e; }
+    .vm-frame-wrap iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+    .vm-placeholder { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #8a8a8a; text-align: center; padding: 1rem; }
+
+    .task-status { width: 1.25rem; text-align: center; }
+    .accordion-button:not(.collapsed) { background: var(--bs-primary-bg-subtle); }
+    pre.cmd { background: #212529; color: #e9ecef; padding: .5rem .75rem; border-radius: .375rem; font-size: .85rem; }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <nav class="navbar navbar-dark bg-dark border-bottom border-secondary px-3 py-2">
+    <div class="d-flex align-items-center gap-2">
+      <button class="btn btn-sm btn-outline-light" id="togglePanels" title="Show/hide panels">
+        <i class="bi bi-layout-sidebar"></i>
+      </button>
+      <span class="navbar-brand mb-0 h1 fs-5"><i class="bi bi-hdd-network me-2"></i>VM Lab Workspace</span>
+    </div>
+    <div class="d-flex align-items-center gap-3 text-light small">
+      <span><i class="bi bi-person-circle me-1"></i>{{ proxmox_username }}</span>
+      <form method="post" action="{% url 'logout' %}" class="m-0">
+        {% csrf_token %}
+        <button class="btn btn-sm btn-outline-light" type="submit"><i class="bi bi-box-arrow-right"></i> Log out</button>
+      </form>
+    </div>
+  </nav>
+
+  {% if vm_error %}
+    <div class="alert alert-danger rounded-0 m-0 py-2 small">
+      <i class="bi bi-exclamation-triangle me-1"></i>Couldn't load your VMs from Proxmox: {{ vm_error }}
+    </div>
+  {% endif %}
+
+  <div class="workspace">
+
+    <!-- ========== Column 1: Labs ========== -->
+    <aside class="labs-sidebar bg-dark text-light p-3 border-end border-secondary">
+      <div class="labs-header d-flex align-items-center justify-content-between mb-3">
+        <h6 class="labs-heading text-uppercase text-secondary small fw-bold mb-0">Labs</h6>
+        <button class="btn btn-sm btn-link text-secondary p-0" id="toggleLabs" title="Collapse/expand labs">
+          <i class="bi bi-chevron-double-left"></i>
+        </button>
+      </div>
+      <ul class="nav flex-column flex-nowrap gap-1" id="labList"></ul>
+    </aside>
+
+    <!-- ========== Column 2: Tasks ========== -->
+    <section class="tasks-sidebar bg-body-tertiary border-end">
+      <div class="p-3 border-bottom bg-body">
+        <h5 class="mb-1" id="labTitle"></h5>
+        <p class="text-body-secondary small mb-2" id="labDescription"></p>
+        <div class="d-flex align-items-center gap-2">
+          <div class="progress flex-grow-1" style="height: 6px;">
+            <div class="progress-bar" id="labProgress" style="width: 0%"></div>
+          </div>
+          <small class="text-body-secondary" id="labProgressText">0/0</small>
+        </div>
+      </div>
+      <div class="tasks-body p-3">
+        <div class="accordion" id="taskAccordion"></div>
+      </div>
+    </section>
+
+    <!-- ========== Column 3: VM ========== -->
+    <main class="vm-pane">
+      <div class="d-flex align-items-center gap-2 px-3 py-2 bg-body border-bottom">
+        <span class="badge" id="vmStatus"></span>
+        <span class="fw-semibold small" id="vmName"></span>
+        <div class="ms-auto btn-group btn-group-sm">
+          <button class="btn btn-outline-secondary" id="reloadVm" title="Reconnect"><i class="bi bi-arrow-clockwise"></i></button>
+          <a class="btn btn-outline-secondary" id="openVm" target="_blank" rel="noopener" title="Open console in a new tab"><i class="bi bi-box-arrow-up-right"></i></a>
+          <button class="btn btn-outline-secondary" id="fullscreenVm" title="Fullscreen"><i class="bi bi-arrows-fullscreen"></i></button>
+        </div>
+      </div>
+
+      <div class="vm-frame-wrap" id="vmFrameWrap">
+        <div class="vm-placeholder" id="vmPlaceholder">
+          <i class="bi bi-display fs-1 mb-2"></i>
+          <div id="vmPlaceholderText"></div>
+        </div>
+        <iframe id="vmFrame" title="Virtual machine console" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+      </div>
+    </main>
+  </div>
+
+  <!-- Data from the Django view. json_script escapes it safely for use in JS. -->
+  {{ labs|json_script:"labs-data" }}
+  {{ vms|json_script:"vms-data" }}
+  {% csrf_token %}
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // =====================================================================
+    // Most of what you see on this page is built here, in the browser.
+    // (In a bigger project this would live in a static file such as
+    // labs/static/labs/workspace.js; it's inline here to keep the sample
+    // in one place and so it can use Django's url template tag for the
+    // refresh and login URLs near the bottom.)
+    //
+    // Django's part (labs/views.py, WorkspaceView) was already done before
+    // this runs: it logged in to Proxmox, set the PVEAuthCookie, fetched the
+    // student's VMs, and put the data into the two <script type="application/json">
+    // tags above (labs-data, vms-data).
+    //
+    // This script then:
+    //   renderLabList()  builds the Labs sidebar from `labs`
+    //   renderTasks()    builds the task accordion + question forms for a lab
+    //   loadVm()         looks up the lab's VM in `vms` and puts its console URL
+    //                    into the <iframe> -- this is what shows the VM
+    //   selectLab()      runs the three above when a lab is clicked
+    //   setInterval(...) (bottom) asks Django every 10 minutes for a fresh
+    //                    Proxmox ticket so the console stays logged in
+    //
+    // Note: task answers are NOT sent to Django yet -- the submit handler only
+    // logs them to the browser console (see the TODO).
+    // =====================================================================
+
+    const labs = JSON.parse(document.getElementById('labs-data').textContent);
+    // VMs this Proxmox user can access, keyed by vmid (JSON turns the keys into strings).
+    const vms = JSON.parse(document.getElementById('vms-data').textContent);
+    const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+    // Tracks which tasks are complete: { labId: Set(taskIndex) }
+    const completed = {};
+    const $ = id => document.getElementById(id);
+
+    function renderLabList(activeId) {
+      $('labList').innerHTML = labs.map(lab => `
+        <li class="nav-item">
+          <a href="#" class="nav-link d-flex align-items-center gap-2 ${lab.id === activeId ? 'active' : ''}" data-lab="${lab.id}" title="${lab.title}">
+            <i class="bi ${lab.icon}"></i>
+            <span class="lab-label flex-grow-1">${lab.title}</span>
+            <span class="badge rounded-pill text-bg-secondary">${lab.tasks.length}</span>
+          </a>
+        </li>`).join('');
+    }
+
+    function renderQuestion(q, taskIdx, qIdx) {
+      const name = `t${taskIdx}q${qIdx}`;
+      const label = `<label class="form-label small fw-semibold">${q.label}</label>`;
+      if (q.type === 'textarea') {
+        return `<div class="mb-3">${label}<textarea class="form-control form-control-sm" rows="3" name="${name}"></textarea></div>`;
+      }
+      if (q.type === 'radio') {
+        return `<div class="mb-3">${label}${q.options.map((opt, i) => `
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="${name}" id="${name}o${i}" value="${opt}">
+            <label class="form-check-label small" for="${name}o${i}">${opt}</label>
+          </div>`).join('')}</div>`;
+      }
+      return `<div class="mb-3">${label}<input type="text" class="form-control form-control-sm" name="${name}"></div>`;
+    }
+
+    function renderTasks(lab) {
+      const done = completed[lab.id] ??= new Set();
+      $('labTitle').textContent = lab.title;
+      $('labDescription').textContent = lab.description;
+
+      $('taskAccordion').innerHTML = lab.tasks.length ? lab.tasks.map((task, i) => `
+        <div class="accordion-item">
+          <h2 class="accordion-header">
+            <button class="accordion-button ${i === 0 ? '' : 'collapsed'} py-2" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#task${i}">
+              <span class="task-status me-2">
+                ${done.has(i) ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-circle text-body-tertiary"></i>'}
+              </span>
+              <span class="small fw-semibold">Task ${i + 1}: ${task.title}</span>
+            </button>
+          </h2>
+          <div id="task${i}" class="accordion-collapse collapse ${i === 0 ? 'show' : ''}" data-bs-parent="#taskAccordion">
+            <div class="accordion-body small">
+              <h6 class="text-uppercase text-body-secondary small fw-bold">Instructions</h6>
+              ${task.instructions}
+              <hr>
+              <h6 class="text-uppercase text-body-secondary small fw-bold">Questions</h6>
+              <form data-task="${i}">
+                ${task.questions.map((q, qi) => renderQuestion(q, i, qi)).join('')}
+                <div class="d-flex justify-content-end">
+                  <button type="submit" class="btn btn-sm btn-primary">${done.has(i) ? 'Update answers' : 'Submit'}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>`).join('')
+        : `<div class="text-body-secondary small text-center py-5">No tasks defined for this lab yet.</div>`;
+
+      const total = lab.tasks.length;
+      $('labProgress').style.width = total ? `${(done.size / total) * 100}%` : '0%';
+      $('labProgressText').textContent = `${done.size}/${total}`;
+    }
+
+    function loadVm(lab) {
+      const vm = vms[String(lab.vmid)];
+      const frame = $('vmFrame');
+
+      if (vm) {
+        $('vmName').textContent = `${vm.name} (VM ${vm.vmid} on ${vm.node})`;
+        $('vmStatus').className = `badge ${vm.status === 'running' ? 'text-bg-success' : 'text-bg-secondary'}`;
+        $('vmStatus').textContent = vm.status;
+        $('openVm').href = vm.console_url;
+        $('openVm').classList.remove('disabled');
+        frame.src = vm.console_url;
+        frame.classList.remove('d-none');
+        $('vmPlaceholder').classList.add('d-none');
+      } else {
+        // Most common cause: the student's Proxmox user has no permission on this VM.
+        const visible = Object.keys(vms);
+        $('vmName').textContent = `VM ${lab.vmid}`;
+        $('vmStatus').className = 'badge text-bg-warning';
+        $('vmStatus').textContent = 'not available';
+        $('openVm').removeAttribute('href');
+        $('openVm').classList.add('disabled');
+        $('vmPlaceholderText').innerHTML =
+          `<div>VM ${lab.vmid} isn't available to your Proxmox account.</div>
+           <small>VMs you can access: ${visible.length ? visible.join(', ') : 'none'}</small>`;
+        frame.removeAttribute('src');
+        frame.classList.add('d-none');
+        $('vmPlaceholder').classList.remove('d-none');
+      }
+    }
+
+    let currentLab;
+    function selectLab(id) {
+      currentLab = labs.find(l => l.id === id);
+      renderLabList(id);
+      renderTasks(currentLab);
+      loadVm(currentLab);
+    }
+
+    // ---- Events ----
+    $('labList').addEventListener('click', e => {
+      const link = e.target.closest('[data-lab]');
+      if (!link) return;
+      e.preventDefault();
+      selectLab(link.dataset.lab);
+    });
+
+    $('taskAccordion').addEventListener('submit', e => {
+      e.preventDefault();
+      const idx = Number(e.target.dataset.task);
+      const answers = Object.fromEntries(new FormData(e.target));
+      console.log('Submit', currentLab.id, idx, answers); // TODO: POST to a Django view
+      completed[currentLab.id].add(idx);
+      renderTasks(currentLab);
+      const next = document.getElementById(`task${idx + 1}`);
+      if (next) bootstrap.Collapse.getOrCreateInstance(next).show();
+    });
+
+    $('togglePanels').addEventListener('click', () => document.body.classList.toggle('panels-hidden'));
+    $('reloadVm').addEventListener('click', () => loadVm(currentLab));
+    $('fullscreenVm').addEventListener('click', () => $('vmFrameWrap').requestFullscreen?.());
+
+    try { if (localStorage.getItem('labsCollapsed') === '1') document.body.classList.add('labs-collapsed'); } catch { }
+    $('toggleLabs').addEventListener('click', () => {
+      const collapsed = document.body.classList.toggle('labs-collapsed');
+      try { localStorage.setItem('labsCollapsed', collapsed ? '1' : '0'); } catch { }
+    });
+
+    // ---- Keep the Proxmox ticket alive ----
+    // Tickets expire after 2 hours. Every 10 minutes ask Django for a fresh one;
+    // the response sets a new PVEAuthCookie, so the console iframe stays logged in.
+    setInterval(async () => {
+      const r = await fetch("{% url 'refresh_ticket' %}", {
+        method: 'POST',
+        headers: { 'X-CSRFToken': csrfToken },
+      });
+      if (r.status === 401) window.location = "{% url 'login' %}";
+    }, 10 * 60 * 1000);
+
+    selectLab(labs[0].id);
+  </script>
+</body>
+</html>
