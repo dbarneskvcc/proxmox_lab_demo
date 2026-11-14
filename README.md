@@ -16,6 +16,9 @@ The interesting code is small:
 
 No extra Proxmox library is used. It's only two API calls, made with `requests`.
 
+Want the labs and tasks to come from the database, drawn with React? See
+[REACT_GUIDE.md](REACT_GUIDE.md).
+
 Building your own project and using this one as a guide? See
 [Using this in your own Django project](#using-this-in-your-own-django-project). It lists
 every piece you need to copy, including one setting where **order matters**.
